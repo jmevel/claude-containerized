@@ -1,0 +1,45 @@
+
+services:
+  claude:
+    build:
+      context: .
+      args:
+        PUID: ${PUID}
+        PGID: ${PGID}
+
+    container_name: claude-desktop
+
+    # Podman rootless UID/GID mapping
+    userns_mode: keep-id
+
+    environment:
+      HOME: /home/claude
+      XDG_RUNTIME_DIR: /run/user/${PUID}
+      WAYLAND_DISPLAY: wayland-0
+
+    volumes:
+      # Wayland GUI forwarding
+      - type: bind
+        source: ${WAYLAND_SOCKET}
+        target: /run/user/${PUID}/wayland-0
+        read_only: true
+
+      # Persistent application data and authentication
+      - ./claude-home:/home/claude:Z
+
+      # Only these project directories are accessible
+      - ../:/workspace/projects:Z
+
+    # Temporary storage
+    tmpfs:
+      - /tmp
+
+    # Security
+    security_opt:
+      - label=type:claude_desktop.process
+
+    cap_drop:
+      - ALL
+
+    init: true
+    shm_size: 1gb

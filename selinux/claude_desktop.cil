@@ -1,0 +1,39 @@
+; SELinux policy for the claude-desktop container (Wayland GUI on the host).
+;
+; Builds on udica's "container" base template, so it stays a confined
+; container domain (MCS separation, no host file access) and only adds
+; what a Wayland client needs to talk to the host compositor.
+;
+; Install:  ./selinux/install.sh   (needs sudo)
+; Use:      security_opt: label=type:claude_desktop.process
+
+(block claude_desktop
+    (blockinherit container)
+
+    ; --- Network: same network access as a stock podman container (container_t).
+    ; For HTTP(S)-only egress, use restricted_net_container instead and add:
+    ;   (allow process unreserved_port_t (udp_socket (name_bind)))   ; QUIC
+    (blockinherit net_container)
+
+    ; --- Volumes (mounted with :Z / :z, so they are container_file_t) ---
+    (allow process container_file_t (dir (add_name create getattr ioctl lock open read remove_name rmdir search setattr write)))
+    (allow process container_file_t (file (append create getattr ioctl lock map open read rename setattr unlink write)))
+    (allow process container_file_t (fifo_file (getattr read write append ioctl lock open)))
+    (allow process container_file_t (sock_file (append getattr open read write)))
+
+    ; --- Wayland ---
+    ; The socket /run/user/$UID/wayland-N is labeled user_tmp_t.
+    (allow process user_tmp_t (dir (getattr open read search)))
+    (allow process user_tmp_t (sock_file (getattr open write append)))
+    ; Connecting to the compositor (kwin_wayland / gnome-shell run as unconfined_t).
+    (allow process unconfined_t (unix_stream_socket (connectto getattr read write)))
+    ; Shared-memory buffers, keymaps and cursors passed by fd (memfd / shm).
+    ; Needed because the domain_can_mmap_files boolean is off.
+    ; Chromium also re-opens its own memfd regions via /proc/self/fd (needs open).
+    (allow process tmpfs_t (file (getattr open read write map)))
+    (allow process user_tmp_t (file (getattr read write map)))
+
+    ; --- GPU acceleration (only used if /dev/dri is passed to the container) ---
+    (allow process device_t (dir (getattr search open)))
+    (allow process dri_device_t (chr_file (ioctl read write getattr lock append open map)))
+)

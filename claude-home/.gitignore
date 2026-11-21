@@ -1,0 +1,3 @@
+# Keep this directory in git (it is mounted as the container home) but ignore its contents.
+*
+!.gitignore
