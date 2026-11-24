@@ -8,6 +8,11 @@ set -uo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
 NAME=claude-desktop
+
+# Projects are mounted at the same path as on the host (see compose.yaml).
+export PROJECTS_DIR=$(dirname "$PWD")
+# Shared with the host app; must exist before they can be mounted.
+mkdir -p "$HOME/.config/Claude/claude-code-sessions" "$HOME/.claude/projects"
 LOG="${XDG_STATE_HOME:-$HOME/.local/state}/claude-desktop-container.log"
 mkdir -p "$(dirname "$LOG")"
 

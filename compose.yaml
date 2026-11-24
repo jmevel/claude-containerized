@@ -27,8 +27,15 @@ services:
       # Persistent application data and authentication
       - ./claude-home:/home/claude:Z
 
-      # Only these project directories are accessible
-      - ../:/workspace/projects:Z
+      # Only these project directories are accessible. Mounted at the same path as on
+      # the host, so Code tab sessions point to the same folders on both sides.
+      # PROJECTS_DIR is the parent folder of this project: start.sh sets it, .env too.
+      - ../:${PROJECTS_DIR:?set PROJECTS_DIR in .env or start with start.sh}:Z
+
+      # Code tab sessions and transcripts, shared with the host app (not copied).
+      # :z (shared label) so the host app can keep using them.
+      - ${HOME}/.config/Claude/claude-code-sessions:/home/claude/.config/Claude/claude-code-sessions:z
+      - ${HOME}/.claude/projects:/home/claude/.claude/projects:z
 
     # Temporary storage
     tmpfs:

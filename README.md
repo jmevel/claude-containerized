@@ -2,10 +2,11 @@
 
 Run the Claude Desktop app in a rootless Podman container while its window shows up on your host's Wayland desktop. On SELinux systems (Fedora, RHEL), SELinux stays **enforcing** the whole time.
 
-The app sees only two things from your machine:
+The app sees only these parts of your machine:
 
 - its own data folder, `claude-home/`
-- the folder that contains this project, mounted at `/workspace/projects`
+- the folder that contains this project, mounted at the same path as on the host
+- your Code tab sessions and their transcripts, shared with the host app (see [Your data](#your-data))
 
 Everything else in your home folder stays out of reach.
 
@@ -19,7 +20,9 @@ Everything else in your home folder stays out of reach.
 │  │  claude-desktop  (Electron, --ozone-platform=wayland)     │   │
 │  │                                                           │   │
 │  │  /home/claude         ◄── ./claude-home                   │   │
-│  │  /workspace/projects  ◄── ../                             │   │
+│  │    .config/Claude/claude-code-sessions ◄── same on host   │   │
+│  │    .claude/projects    ◄── ~/.claude/projects             │   │
+│  │  $PROJECTS_DIR        ◄── ../  (same path as on host)     │   │
 │  └───────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -50,12 +53,11 @@ You do lose a layer of protection. Without SELinux, the container is held back o
 |---|---|
 | `Dockerfile` | Debian 12 image with Claude Desktop from Anthropic's official APT repository |
 | `compose.yaml` | Container definition: Wayland socket, volumes, SELinux label, dropped capabilities |
-| `.env` | Your user ID/group ID and which Wayland socket to forward |
+| `.env.example` | Template for `.env`: your user ID/group ID, which Wayland socket to forward, and where your projects are. `.env` itself is git-ignored. |
 | `selinux/claude_desktop.cil` | The SELinux policy for the container |
 | `selinux/install.sh` | Loads (or reloads) that policy |
 | `start.sh` | Starts the container, or brings the window back if it's already running. `--stop` stops it. |
 | `install-desktop-entry.sh` | Adds a "Claude (containerized)" launcher to your application menu |
-| `migrate-code-sessions.sh` | Copies your host's Code tab sessions into the container, and re-syncs them later |
 | `claude-home/` | The container's home folder: sign-in, settings, sessions. Its `.gitignore` keeps the folder in git but ignores everything inside, so your data is never committed. |
 
 ---
@@ -64,10 +66,17 @@ You do lose a layer of protection. Without SELinux, the container is held back o
 
 ### 1. Configure `.env`
 
+`.env` holds your own values, so it's git-ignored. Create it from the template, then edit it:
+
+```bash
+cp .env.example .env
+```
+
 ```ini
 PUID=1000
 PGID=1000
-WAYLAND_SOCKET=/run/user/1000/wayland-1
+WAYLAND_SOCKET=/run/user/1000/wayland-0
+PROJECTS_DIR=/home/you/projects
 ```
 
 | Variable | What it is | How to find it |
@@ -75,11 +84,12 @@ WAYLAND_SOCKET=/run/user/1000/wayland-1
 | `PUID` | Your user ID. The container user gets the same ID, so files it creates in `claude-home/` and your projects belong to you. | `id -u` |
 | `PGID` | Your group ID, for the same reason | `id -g` |
 | `WAYLAND_SOCKET` | Full path of your desktop's Wayland socket on the host | `echo $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` |
+| `PROJECTS_DIR` | Absolute path of the folder that contains this project. It's mounted at the same path inside the container, so Code tab sessions point to the same folders on both sides. | `dirname "$PWD"` |
 
-Or generate the file from inside your Wayland session (not over SSH or from a TTY, where `WAYLAND_DISPLAY` isn't set):
+Or generate the file from this folder, inside your Wayland session (not over SSH or from a TTY, where `WAYLAND_DISPLAY` isn't set):
 
 ```bash
-printf 'PUID=%s\nPGID=%s\nWAYLAND_SOCKET=%s\n' "$(id -u)" "$(id -g)" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" > .env
+printf 'PUID=%s\nPGID=%s\nWAYLAND_SOCKET=%s\nPROJECTS_DIR=%s\n' "$(id -u)" "$(id -g)" "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" "$(dirname "$PWD")" > .env
 ```
 
 Things to know:
@@ -90,7 +100,8 @@ Things to know:
   podman compose up --build
   ```
 
-  `WAYLAND_SOCKET` is only used at start, so changing it needs just a restart.
+  `WAYLAND_SOCKET` and `PROJECTS_DIR` are only used at start, so changing them needs just a restart.
+- **`start.sh` sets `PROJECTS_DIR` for you,** from where this folder is, and ignores the value in `.env`. The `.env` value is for `podman compose` commands you run by hand. If you move this folder, update it there.
 - **The socket name can differ from the host.** Whatever your host socket is called (KDE often uses `wayland-1`), `compose.yaml` mounts it as `wayland-0` inside the container and sets `WAYLAND_DISPLAY=wayland-0`. Don't change the `wayland-0` in `compose.yaml`.
 - **The socket name can change between logins**, for example after a compositor crash or when a second session is running. If the window stops appearing, check the socket path again.
 
@@ -103,6 +114,12 @@ Things to know:
 Run it again whenever you edit `selinux/claude_desktop.cil`.
 
 ### 3. Build and start
+
+The host folders shared with the container must exist first. They do if you've used Claude Code or the Code tab on the host; `start.sh` also creates them.
+
+```bash
+mkdir -p ~/.config/Claude/claude-code-sessions ~/.claude/projects
+```
 
 ```bash
 podman compose up --build
@@ -292,73 +309,32 @@ podman run --rm --entrypoint dpkg-query claude-desktop-container-claude -W claud
 
 ## Your data
 
-The container has its own data, completely separate from the host app's.
+The container has its own app data, separate from the host app's, except for Code tab sessions, which both share.
 
 | | Host | Container (on disk) |
 |---|---|---|
 | Desktop app data, settings, MCP config | `~/.config/Claude/` | `claude-home/.config/Claude/` |
-| Code tab session list | `~/.config/Claude/claude-code-sessions/` | `claude-home/.config/Claude/claude-code-sessions/` |
-| Claude Code transcripts, settings, skills | `~/.claude/` | `claude-home/.claude/` |
+| Code tab session list | `~/.config/Claude/claude-code-sessions/` | **shared:** the host folder, mounted |
+| Claude Code transcripts | `~/.claude/projects/` | **shared:** the host folder, mounted |
+| Claude Code settings, skills | `~/.claude/` | `claude-home/.claude/` |
 | App logs | `~/.config/Claude/logs/` | `claude-home/.config/Claude/logs/` |
 
 - **Chat tab conversations** live on Anthropic's servers. They appear in both apps as soon as you sign in with the same account.
-- **Code tab sessions** are stored locally and are **not** synced. A fresh container starts with an empty Code tab. Use the migration script below to bring them over.
+- **Code tab sessions** are stored locally. `compose.yaml` mounts the host's session folders into the container, so both apps see the same list, and a session started in one can be continued in the other.
 
----
+Sessions work on both sides because the projects folder is mounted at the same path as on the host (`PROJECTS_DIR`). A session records its folder as an absolute path, and Claude Code names a session's transcript folder after that path.
 
-## Migrating Code tab sessions from the host
+Things to know:
 
-`migrate-code-sessions.sh` copies the Code tab sessions from your host app into the container, and brings existing copies up to date when you run it again.
-
-```bash
-podman compose down
-```
-
-```bash
-./migrate-code-sessions.sh --dry-run
-```
-
-```bash
-./migrate-code-sessions.sh
-```
-
-```bash
-podman compose up -d
-```
-
-Or, in one line:
-
-```bash
-podman compose down && ./migrate-code-sessions.sh && podman compose up -d
-```
-
-**What it does:**
-
-- **Copies the session list** (`claude-code-sessions/…/local_*.json`) and the full conversation transcripts (`~/.claude/projects/…`) into `claude-home/`.
-- **Rewrites paths to the container's view,** so sessions open in the right folder:
-  - `<parent of this project>` becomes `/workspace/projects`. For example, `~/projects/my-app` becomes `/workspace/projects/my-app`.
-  - `~/.config/Claude` and `~/.claude` become `/home/claude/…`.
-- **Is safe to run again** whenever you want to re-sync:
-  - new host sessions are copied
-  - sessions that continued on the host are updated
-  - if a copy was also changed inside the container since the last sync (you continued that session there), the container's copy is kept and the script lists it
-  - it never deletes anything. Sessions you created in the container are untouched.
-
-  The time of the last sync is stored in `claude-home/.code-sessions-last-sync`.
-- **Doesn't change** your host files.
-- **Refuses to run** while the container is up, because the app might ignore or overwrite files changed under it.
-
-**What it skips:**
-
-- Sessions and transcripts whose folder isn't under the mounted directory (for example `~/other-projects/...`, when this project lives in `~/projects/`). The container can't open those folders anyway.
-- Extra folders a session used outside the mount, such as something in `~/Downloads`. The session still opens; that folder just won't exist in the container.
-- Undo snapshots (`~/.claude/file-history`). The conversations are complete, but you can't roll back file edits made in old sessions.
+- **Don't open the same session in both apps at the same time.** Both would write to the same files.
+- **Some sessions open on one side only.** Both apps list all sessions, but the container can't open a session whose folder is outside `PROJECTS_DIR`, and the host can't open a session without a project folder (a "scratch" session) started in the container: its folder is in `claude-home/`.
 
 ---
 
 ## Security notes
 
 - **Volumes:** `claude-home` uses `:Z`, a label private to this container. `../` also uses `:Z`, which relabels your **whole projects folder** for this container only. If other containers mount anything from that folder, switch it to `:z` (lowercase, shared label).
+- **Shared sessions:** `~/.config/Claude/claude-code-sessions` and `~/.claude/projects` use `:z`, a shared label, so the host app keeps working with them. The container can read and write **all** your Code tab sessions and Claude Code transcripts, including those of projects outside `PROJECTS_DIR`. Remove those two lines from `compose.yaml` if you'd rather keep them apart; the container then has its own sessions in `claude-home/`.
 - **Capabilities:** the container runs with `cap_drop: ALL` and `userns_mode: keep-id`. Inside it you are your own UID, never root.
 - **Socket mount:** the Wayland socket is mounted read-only. Clients can still connect, but can't replace or remove the socket.
 
